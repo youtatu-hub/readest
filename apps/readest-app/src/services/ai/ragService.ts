@@ -58,6 +58,18 @@ function getChapterTitle(toc: TOCItem[] | undefined, sectionIndex: number): stri
   return toc[0]?.label || `Section ${sectionIndex + 1}`;
 }
 
+function getEmbeddingModelName(settings: AISettings): string {
+  switch (settings.provider) {
+    case 'ollama':
+      return settings.ollamaEmbeddingModel?.trim() || '';
+    case 'openrouter':
+      // OpenAI-compatible endpoints are allowed to provide chat only.
+      return settings.openrouterEmbeddingModel?.trim() || '';
+    default:
+      return settings.aiGatewayEmbeddingModel?.trim() || 'openai/text-embedding-3-small';
+  }
+}
+
 export async function indexBook(
   bookDoc: BookDocType,
   bookHash: string,
@@ -130,37 +142,56 @@ export async function indexBook(
       return;
     }
 
-    onProgress?.({ current: 0, total: allChunks.length, phase: 'embedding' });
-    const embeddingModelName =
-      settings.provider === 'ollama'
-        ? settings.ollamaEmbeddingModel
-        : settings.provider === 'openrouter'
-          ? settings.openrouterEmbeddingModel || 'text-embedding-3-small'
-          : settings.aiGatewayEmbeddingModel || 'text-embedding-3-small';
-    aiLogger.embedding.start(embeddingModelName, allChunks.length);
+    const embeddingModelName = getEmbeddingModelName(settings);
+    if (embeddingModelName) {
+      onProgress?.({ current: 0, total: allChunks.length, phase: 'embedding' });
+      aiLogger.embedding.start(embeddingModelName, allChunks.length);
 
-    const texts = allChunks.map((c) => c.text);
-    try {
-      const { embeddings } = await withRetryAndTimeout(
-        () =>
-          embedMany({
-            model: provider.getEmbeddingModel(),
-            values: texts,
-          }),
-        AI_TIMEOUTS.EMBEDDING_BATCH,
-        AI_RETRY_CONFIGS.EMBEDDING,
-      );
-
-      for (let i = 0; i < allChunks.length; i++) {
-        allChunks[i]!.embedding = embeddings[i];
-        state.chunksProcessed = i + 1;
-        state.progress = Math.round(((i + 1) / allChunks.length) * 100);
+      const batchSize = settings.provider === 'ollama' ? 4 : 16;
+      const embeddingModel = provider.getEmbeddingModel();
+      try {
+        let embeddedCount = 0;
+        for (let offset = 0; offset < allChunks.length; offset += batchSize) {
+          const batch = allChunks.slice(offset, offset + batchSize);
+          const { embeddings } = await withRetryAndTimeout(
+            () =>
+              embedMany({
+                model: embeddingModel,
+                values: batch.map((chunk) => chunk.text),
+              }),
+            AI_TIMEOUTS.EMBEDDING_BATCH,
+            AI_RETRY_CONFIGS.EMBEDDING,
+          );
+          if (embeddings.length !== batch.length) {
+            throw new Error(
+              'Embedding model returned ' + embeddings.length + ' vectors for ' + batch.length + ' inputs',
+            );
+          }
+          for (let i = 0; i < batch.length; i++) {
+            batch[i]!.embedding = embeddings[i];
+          }
+          embeddedCount += batch.length;
+          state.chunksProcessed = embeddedCount;
+          state.progress = Math.round((embeddedCount / allChunks.length) * 100);
+          onProgress?.({ current: embeddedCount, total: allChunks.length, phase: 'embedding' });
+          aiLogger.embedding.batch(embeddedCount, allChunks.length);
+        }
+        aiLogger.embedding.complete(
+          state.chunksProcessed,
+          allChunks.length,
+          allChunks[0]?.embedding?.length || 0,
+        );
+      } catch (e) {
+        aiLogger.embedding.error('batch', (e as Error).message);
+        throw e;
       }
+    } else {
+      // The UI documents embedding as optional. Keep chat and BM25 usable
+      // for compatible endpoints that expose chat completions only.
+      state.chunksProcessed = 0;
+      state.progress = 100;
       onProgress?.({ current: allChunks.length, total: allChunks.length, phase: 'embedding' });
-      aiLogger.embedding.complete(embeddings.length, allChunks.length, embeddings[0]?.length || 0);
-    } catch (e) {
-      aiLogger.embedding.error('batch', (e as Error).message);
-      throw e;
+      aiLogger.rag.indexProgress('embedding skipped', allChunks.length, allChunks.length);
     }
 
     onProgress?.({ current: 0, total: 2, phase: 'indexing' });
@@ -177,7 +208,7 @@ export async function indexBook(
       authorName: extractAuthor(bookDoc.metadata),
       totalSections: sections.length,
       totalChunks: allChunks.length,
-      embeddingModel: embeddingModelName,
+      embeddingModel: embeddingModelName || 'none',
       lastUpdated: Date.now(),
     };
     aiLogger.store.saveMeta(meta);
@@ -206,20 +237,22 @@ export async function hybridSearch(
   const provider = getAIProvider(settings);
   let queryEmbedding: number[] | null = null;
 
-  try {
-    // use AI SDK embed with provider's embedding model
-    const { embedding } = await withRetryAndTimeout(
-      () =>
-        embed({
-          model: provider.getEmbeddingModel(),
-          value: query,
-        }),
-      AI_TIMEOUTS.EMBEDDING_SINGLE,
-      AI_RETRY_CONFIGS.EMBEDDING,
-    );
-    queryEmbedding = embedding;
-  } catch {
-    // bm25 only fallback
+  if (getEmbeddingModelName(settings)) {
+    try {
+      // use AI SDK embed with provider's embedding model
+      const { embedding } = await withRetryAndTimeout(
+        () =>
+          embed({
+            model: provider.getEmbeddingModel(),
+            value: query,
+          }),
+        AI_TIMEOUTS.EMBEDDING_SINGLE,
+        AI_RETRY_CONFIGS.EMBEDDING,
+      );
+      queryEmbedding = embedding;
+    } catch {
+      // bm25 only fallback
+    }
   }
 
   const results = await aiStore.hybridSearch(bookHash, queryEmbedding, query, topK, maxPage);

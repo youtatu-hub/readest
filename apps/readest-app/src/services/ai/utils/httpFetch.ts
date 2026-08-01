@@ -27,5 +27,5 @@ export const getAIFetch = (): typeof fetch => {
     // providers can take it directly via their `fetch` option.
     return tauriFetch as unknown as typeof fetch;
   }
-  return window.fetch.bind(window);
+  return typeof window === 'undefined' ? fetch : window.fetch.bind(window);
 };

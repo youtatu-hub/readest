@@ -116,6 +116,7 @@ export const Thread: FC<ThreadProps> = ({
   const isRunning = useThread((t) => t.isRunning);
 
   const showLoading = isLoadingHistory && hasActiveConversation;
+  const showEmptyState = !hasActiveConversation || messageCount === 0;
 
   useEffect(() => {
     if (isInitialMount.current && messageCount > 0 && viewportRef.current) {
@@ -164,8 +165,8 @@ export const Thread: FC<ThreadProps> = ({
     <ThreadPrimitive.Root className='bg-base-100 relative flex h-full w-full flex-col items-stretch px-3'>
       <LoadingOverlay isVisible={showLoading} />
 
-      {!hasActiveConversation && (
-        <ThreadPrimitive.Empty>
+      {showEmptyState && (
+        <div className='flex h-full flex-col'>
           <div className='animate-in fade-in flex h-full flex-col items-center justify-center duration-300'>
             <div className='bg-base-content/10 mb-4 rounded-full p-3'>
               <BookOpenIcon className='text-base-content size-6' />
@@ -176,10 +177,11 @@ export const Thread: FC<ThreadProps> = ({
             </p>
             <Composer onClear={onClear} onResetIndex={onResetIndex} />
           </div>
-        </ThreadPrimitive.Empty>
+        </div>
       )}
 
-      <AssistantIf condition={(s) => s.thread.isEmpty === false}>
+      {!showEmptyState && (
+        <>
         <div
           className={cn(
             'relative min-h-0 flex-1 transition-opacity duration-300',
@@ -213,7 +215,8 @@ export const Thread: FC<ThreadProps> = ({
         </div>
 
         <Composer onClear={onClear} onResetIndex={onResetIndex} />
-      </AssistantIf>
+        </>
+      )}
     </ThreadPrimitive.Root>
   );
 };

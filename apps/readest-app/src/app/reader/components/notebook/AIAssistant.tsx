@@ -33,7 +33,7 @@ import { ReedyAssistant } from '@/services/reedy/ui/ReedyAssistant';
 import type { ReadingContextSnapshot } from '@/services/reedy/tools/builtins/types';
 
 import { Button } from '@/components/ui/button';
-import { Loader2Icon, BookOpenIcon } from 'lucide-react';
+import { AlertTriangle, BookOpenIcon, Loader2Icon, RotateCw } from 'lucide-react';
 import { Thread } from '@/components/assistant/Thread';
 
 // Helper function to convert AIMessage array to ExportedMessageRepository format
@@ -72,6 +72,11 @@ function convertToExportedMessages(
 
 interface AIAssistantProps {
   bookKey: string;
+}
+
+function hasConfiguredEmbeddingModel(settings: AISettings): boolean {
+  // OpenAI-compatible endpoints may provide chat without embeddings.
+  return settings.provider !== 'openrouter' || !!settings.openrouterEmbeddingModel?.trim();
 }
 
 // inner component that uses the runtime hook
@@ -212,7 +217,7 @@ const AIAssistantWithRuntime = ({
     adapters: historyAdapter ? { history: historyAdapter } : undefined,
   });
 
-  if (!runtime) return null;
+  if (!runtime) return <div className='text-muted-foreground flex h-full items-center justify-center text-sm'>Loading AI chat...</div>;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -300,7 +305,9 @@ const AIAssistant = ({ bookKey }: AIAssistantProps) => {
     reedyRuntime === 'agent' &&
     !!appService &&
     isTauriAppPlatform() &&
-    !!bookData?.bookDoc;
+    !!bookData?.bookDoc &&
+    !!settings?.aiSettings &&
+    hasConfiguredEmbeddingModel(settings.aiSettings);
 
   if (useAgentRuntime) return <ReedyAgentAssistantBridge bookKey={bookKey} />;
   return <LegacyAIAssistant bookKey={bookKey} />;
@@ -319,6 +326,9 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isIndexing, setIsIndexing] = useState(false);
   const [indexProgress, setIndexProgress] = useState<EmbeddingProgress | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
+  const [indexCheckError, setIndexCheckError] = useState<string | null>(null);
+  const [indexCheckAttempt, setIndexCheckAttempt] = useState(0);
   const [indexed, setIndexed] = useState(false);
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
 
@@ -336,44 +346,68 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
     if (!aiSettings) return null;
     const legacy = new LegacyIdbBackend(aiSettings);
     const reedy: RetrievalBackend | null =
-      appService && isTauriAppPlatform()
+      appService && isTauriAppPlatform() && hasConfiguredEmbeddingModel(aiSettings)
         ? new ReedyBackend(appService as AppService, aiSettings)
         : null;
     return selectBackend({ settings: aiSettings, isTauri: isTauriAppPlatform(), legacy, reedy });
   }, [aiSettings, appService]);
 
-  // check if book is indexed on mount
+  // Check the index state, but surface IndexedDB/Tauri failures instead of
+  // leaving the notebook blank forever.
   useEffect(() => {
-    if (bookHash && backend) {
-      backend.isIndexed(bookHash).then((result) => {
-        setIndexed(result);
-        setIsLoading(false);
-      });
-    } else if (!backend) {
+    let alive = true;
+    setIsLoading(true);
+    setIndexCheckError(null);
+    if (!bookHash || !backend) {
       setIsLoading(false);
-    } else {
-      setIsLoading(false);
+      return () => {
+        alive = false;
+      };
     }
-  }, [bookHash, backend]);
+    void backend
+      .isIndexed(bookHash)
+      .then((result) => {
+        if (!alive) return;
+        setIndexed(result);
+      })
+      .catch((error) => {
+        if (!alive) return;
+        const message = error instanceof Error ? error.message : String(error);
+        aiLogger.rag.indexError(bookHash, message);
+        setIndexed(false);
+        setIndexCheckError(message);
+      })
+      .finally(() => {
+        if (alive) setIsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [bookHash, backend, indexCheckAttempt]);
 
   const handleIndex = useCallback(async () => {
     if (!bookData?.bookDoc || !aiSettings || !backend) return;
+    setIndexError(null);
+    setIndexCheckError(null);
     setIsIndexing(true);
     try {
       await backend.indexBook(bookData.bookDoc, bookHash, { onProgress: setIndexProgress });
       setIndexed(true);
-    } catch (e) {
-      aiLogger.rag.indexError(bookHash, (e as Error).message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      aiLogger.rag.indexError(bookHash, message);
+      setIndexError(message);
     } finally {
       setIsIndexing(false);
       setIndexProgress(null);
     }
-  }, [bookData?.bookDoc, bookHash, aiSettings]);
+  }, [bookData?.bookDoc, bookHash, aiSettings, backend]);
 
   const handleResetIndex = useCallback(async () => {
     if (!appService || !backend) return;
     if (!(await appService.ask(_('Are you sure you want to re-index this book?')))) return;
     await backend.clearBook(bookHash);
+    setIndexError(null);
     setIndexed(false);
   }, [bookHash, appService, backend, _]);
 
@@ -401,10 +435,49 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
     return null;
   }
 
+  if (indexCheckError && !isIndexing) {
+    return (
+      <div className='flex h-full flex-col items-center justify-center gap-3 p-4 text-center'>
+        <AlertTriangle className='text-warning size-6' />
+        <div className='max-w-full'>
+          <h3 className='text-foreground mb-0.5 text-sm font-medium'>{_('Index status unavailable')}</h3>
+          <p className='text-muted-foreground break-words text-xs'>{indexCheckError}</p>
+        </div>
+        <Button
+          onClick={() => setIndexCheckAttempt((attempt) => attempt + 1)}
+          size='sm'
+          variant='outline'
+          className='h-8 text-xs'
+        >
+          <RotateCw className='mr-1.5 size-3.5' />
+          {_('Retry')}
+        </Button>
+      </div>
+    );
+  }
+
   const progressPercent =
     indexProgress?.phase === 'embedding' && indexProgress.total > 0
       ? Math.round((indexProgress.current / indexProgress.total) * 100)
       : 0;
+
+  if (indexError && !isIndexing) {
+    return (
+      <div className='flex h-full flex-col items-center justify-center gap-3 p-4 text-center'>
+        <div className='bg-warning/10 rounded-full p-3'>
+          <AlertTriangle className='text-warning size-6' />
+        </div>
+        <div className='max-w-full'>
+          <h3 className='text-foreground mb-0.5 text-sm font-medium'>{_('Indexing failed')}</h3>
+          <p className='text-muted-foreground break-words text-xs'>{indexError}</p>
+        </div>
+        <Button onClick={handleIndex} size='sm' variant='outline' className='h-8 text-xs'>
+          <RotateCw className='mr-1.5 size-3.5' />
+          {_('Retry')}
+        </Button>
+      </div>
+    );
+  }
 
   if (!indexed && !isIndexing) {
     return (
@@ -448,7 +521,7 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
     );
   }
 
-  if (!backend) return null;
+  if (!backend) return <div className='text-muted-foreground flex h-full items-center justify-center p-4 text-sm'>AI index backend unavailable</div>;
 
   return (
     <AIAssistantChat

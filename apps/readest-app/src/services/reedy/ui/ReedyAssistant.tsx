@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import type { AppService } from '@/types/system';
 import type { BookDoc } from '@/libs/document';
 import type { AISettings } from '@/services/ai/types';
@@ -89,6 +90,8 @@ export function ReedyAssistant({
     skills: SkillRegistry;
   } | null>(null);
   const [availableSkills, setAvailableSkills] = useState<Skill[]>([]);
+  const [reedyError, setReedyError] = useState<string | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     void appService
@@ -112,6 +115,7 @@ export function ReedyAssistant({
       })
       .catch((err) => {
         console.error('[Reedy] failed to open reedy.db', err);
+        setReedyError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       alive = false;
@@ -271,14 +275,23 @@ export function ReedyAssistant({
   useEffect(() => {
     if (!reedy || !bookHash) return;
     let alive = true;
-    void reedy.db.getBookMeta(bookHash).then((meta) => {
-      if (!alive) return;
-      if (!meta) setIndexingPhase('idle');
-      else if (meta.indexingStatus === 'indexed') setIndexingPhase('indexed');
-      else if (meta.indexingStatus === 'empty_index') setIndexingPhase('empty');
-      else if (meta.indexingStatus === 'failed') setIndexingPhase('failed');
-      else setIndexingPhase('idle');
-    });
+    void reedy.db
+      .getBookMeta(bookHash)
+      .then((meta) => {
+        if (!alive) return;
+        setIndexError(meta?.error ?? null);
+        if (!meta) setIndexingPhase('idle');
+        else if (meta.indexingStatus === 'indexed') setIndexingPhase('indexed');
+        else if (meta.indexingStatus === 'empty_index') setIndexingPhase('empty');
+        else if (meta.indexingStatus === 'failed') setIndexingPhase('failed');
+        else setIndexingPhase('idle');
+      })
+      .catch((err) => {
+        if (!alive) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setIndexError(message);
+        setIndexingPhase('failed');
+      });
     return () => {
       alive = false;
     };
@@ -292,6 +305,7 @@ export function ReedyAssistant({
   const handleIndex = useCallback(async () => {
     if (!reedy) return;
     setIndexingPhase('indexing');
+    setIndexError(null);
     try {
       await reedy.indexer.indexBook(bookDoc, bookHash, models.embedding, {
         onProgress: (e) => {
@@ -305,6 +319,7 @@ export function ReedyAssistant({
         },
       });
       const meta = await reedy.db.getBookMeta(bookHash);
+      setIndexError(meta?.error ?? null);
       setIndexingPhase(
         meta?.indexingStatus === 'empty_index'
           ? 'empty'
@@ -313,7 +328,9 @@ export function ReedyAssistant({
             : 'failed',
       );
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error('[Reedy] index failed', err);
+      setIndexError(message);
       setIndexingPhase('failed');
     } finally {
       setIndexProgress(null);
@@ -341,6 +358,17 @@ export function ReedyAssistant({
     );
   }
 
+  if (reedyError) {
+    return (
+      <div className='flex h-full flex-col items-center justify-center gap-3 p-4 text-center'>
+        <AlertTriangle className='text-warning size-6' />
+        <div className='max-w-full'>
+          <h3 className='text-base-content mb-0.5 text-sm font-medium'>Reedy unavailable</h3>
+          <p className='text-base-content/60 break-words text-xs'>{reedyError}</p>
+        </div>
+      </div>
+    );
+  }
   if (!reedy) {
     return (
       <div className='flex h-full items-center justify-center p-4'>
@@ -359,6 +387,7 @@ export function ReedyAssistant({
         }
         onIndex={handleIndex}
         onReindex={handleIndex}
+        errorMessage={indexError ?? undefined}
       />
     );
   }

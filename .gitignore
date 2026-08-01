@@ -58,3 +58,6 @@ result*
 backups/
 docker/compose.local.yaml
 docker/compose.local.yaml.bak*
+
+# Local GitHub token used by deployment/push helpers
+.github/token
