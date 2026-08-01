@@ -71,7 +71,7 @@ async function* asyncIter<T>(items: T[]): AsyncGenerator<T> {
 interface RunCall {
   model: unknown;
   system: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: unknown }>;
   tools?: Record<string, unknown>;
   stopWhen?: unknown;
   abortSignal?: AbortSignal;
@@ -173,6 +173,48 @@ describe('TauriChatAdapter wiring (M1.11)', () => {
     const turnIds = (sourceStore as unknown as { sources: Map<string, unknown[]> }).sources;
     const populatedTurns = [...turnIds.entries()].filter(([, v]) => v.length > 0);
     expect(populatedTurns.length).toBe(1);
+  });
+
+  it('passes Assistant UI image attachments into model content', async () => {
+    const sourceStore = new ReedySourceStore();
+    const image = 'data:image/png;base64,abc';
+    const adapter = createTauriAdapter(() => ({
+      settings: baseSettings,
+      bookHash: 'bk1',
+      bookTitle: 'Title',
+      authorName: 'Author',
+      currentPage: 0,
+      backend: fakeReedy(),
+      sourceStore,
+    }));
+
+    await drainRun(
+      adapter.run({
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'look at this' }],
+            attachments: [
+              {
+                id: 'image.png',
+                type: 'image',
+                name: 'image.png',
+                contentType: 'image/png',
+                status: { type: 'complete' },
+                content: [{ type: 'image', image }],
+              },
+            ],
+          },
+        ],
+        abortSignal: undefined,
+      } as unknown as Parameters<typeof adapter.run>[0]) as AsyncIterable<unknown>,
+    );
+
+    const call = streamTextMock.mock.calls[0]![0] as RunCall;
+    expect(call.messages[0]!.content).toEqual([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', image },
+    ]);
   });
 
   it('onTurnStart fires synchronously before the stream begins so the UI can subscribe', async () => {

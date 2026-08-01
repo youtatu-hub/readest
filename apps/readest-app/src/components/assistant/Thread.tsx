@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, type FC } from 'react';
+import { useEffect, useRef, useState, type FC } from 'react';
 import {
   ActionBarPrimitive,
+  AttachmentPrimitive,
   AssistantIf,
   BranchPickerPrimitive,
   ComposerPrimitive,
@@ -24,6 +25,8 @@ import {
   RefreshCwIcon,
   SquareIcon,
   Trash2Icon,
+  X,
+  ImagePlus,
 } from 'lucide-react';
 
 import { MarkdownText } from './MarkdownText';
@@ -221,6 +224,51 @@ export const Thread: FC<ThreadProps> = ({
   );
 };
 
+const ComposerImageAttachment: FC = () => {
+  const attachment = useAssistantState((s) => s.attachment);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!attachment?.file) {
+      setPreviewUrl(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(attachment.file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [attachment?.file]);
+
+  if (!attachment || !previewUrl) return null;
+
+  return (
+    <AttachmentPrimitive.Root className='relative size-14 overflow-hidden rounded-lg border'>
+      <img src={previewUrl} alt={attachment.name} className='size-full object-cover' />
+      <AttachmentPrimitive.Remove
+        className='bg-base-content/80 text-base-100 absolute end-0.5 top-0.5 flex size-5 items-center justify-center rounded-full'
+        aria-label='Remove image'
+        title='Remove image'
+      >
+        <X className='size-3' />
+      </AttachmentPrimitive.Remove>
+    </AttachmentPrimitive.Root>
+  );
+};
+
+const MessageImageAttachment: FC = () => {
+  const attachment = useAssistantState((s) => s.attachment);
+  const imagePart = attachment?.content?.find((part) => part.type === 'image');
+  const image = imagePart?.type === 'image' ? imagePart.image : null;
+
+  if (!attachment || typeof image !== 'string') return null;
+
+  return (
+    <AttachmentPrimitive.Root className='max-w-[90%] overflow-hidden rounded-xl border'>
+      <img src={image} alt={attachment.name} className='max-h-64 w-auto object-contain' />
+    </AttachmentPrimitive.Root>
+  );
+};
+
 interface ComposerProps {
   onClear?: () => void;
   onResetIndex?: () => void;
@@ -236,8 +284,16 @@ const Composer: FC<ComposerProps> = ({ onClear, onResetIndex }) => {
       data-empty={isEmpty}
       data-running={isRunning}
     >
-      <div className='bg-base-200 ring-base-content/10 focus-within:ring-base-content/20 overflow-hidden rounded-2xl shadow-sm ring-1 ring-inset transition-all duration-200'>
+      <ComposerPrimitive.AttachmentDropzone asChild>
+        <div className='bg-base-200 ring-base-content/10 focus-within:ring-base-content/20 overflow-hidden rounded-2xl shadow-sm ring-1 ring-inset transition-all duration-200'>
+          <div className='flex flex-wrap gap-2 px-1.5 pt-1.5'>
+            <ComposerPrimitive.Attachments components={{ Image: ComposerImageAttachment }} />
+          </div>
         <div className='flex items-end gap-0.5 p-1.5'>
+          <ComposerPrimitive.AddAttachment className='text-base-content hover:bg-base-300 mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-full transition-colors' aria-label='Attach image' title='Attach image'>
+            <ImagePlus className='size-3.5' />
+          </ComposerPrimitive.AddAttachment>
+
           {onClear && (
             <button
               type='button'
@@ -283,6 +339,7 @@ const Composer: FC<ComposerProps> = ({ onClear, onResetIndex }) => {
           </div>
         </div>
       </div>
+      </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
@@ -390,7 +447,8 @@ const UserMessage: FC = () => {
       data-message-role='user'
     >
       <div className='flex flex-col items-end'>
-        <div className='border-base-content/10 bg-base-200 text-base-content relative max-w-[90%] rounded-2xl rounded-br-md border px-3 py-2'>
+        <MessagePrimitive.Attachments components={{ Image: MessageImageAttachment }} />
+        <div className='border-base-content/10 bg-base-200 text-base-content relative mt-1 max-w-[90%] rounded-2xl rounded-br-md border px-3 py-2'>
           <div className='prose prose-xs text-base-content [&_*]:!text-base-content select-text text-sm'>
             <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
           </div>

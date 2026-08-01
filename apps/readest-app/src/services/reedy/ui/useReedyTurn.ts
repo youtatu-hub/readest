@@ -3,7 +3,7 @@
 import { useCallback, useRef } from 'react';
 import type { AgentRuntime, RunTurnInput } from '../runtime/AgentRuntime';
 import type { ReedyEvent } from '../runtime/events';
-import { useReedyStore } from '../store/reedyStore';
+import { useReedyStore, type ReedyImageAttachment } from '../store/reedyStore';
 
 /**
  * Drives one assistant turn through the AgentRuntime, dispatching every
@@ -21,6 +21,7 @@ export function useReedyTurn(runtime: AgentRuntime | null) {
       sessionId: string;
       bookHash: string;
       userMessage: string;
+      imageAttachments?: ReedyImageAttachment[];
       /** Optional per-turn tool-name allowlist (e.g. active skill's). */
       toolAllowlist?: readonly string[] | null;
     }): Promise<void> => {
@@ -32,12 +33,13 @@ export function useReedyTurn(runtime: AgentRuntime | null) {
       cancelRef.current = controller;
 
       const store = useReedyStore.getState();
-      store.startUserTurn(args.userMessage);
+      store.startUserTurn(args.userMessage, args.imageAttachments);
 
       const turnInput: RunTurnInput = {
         sessionId: args.sessionId,
         bookHash: args.bookHash,
         userMessage: args.userMessage,
+        imageAttachments: args.imageAttachments,
         signal: controller.signal,
         toolAllowlist: args.toolAllowlist ?? null,
       };

@@ -111,5 +111,13 @@ export interface AIMessage {
   conversationId: string;
   role: 'user' | 'assistant';
   content: string;
+  attachments?: AIMessageAttachment[];
   createdAt: number;
+}
+
+export interface AIMessageAttachment {
+  type: 'image';
+  data: string;
+  mimeType: string;
+  filename?: string;
 }

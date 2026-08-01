@@ -1,4 +1,5 @@
 import { streamText, stepCountIs } from 'ai';
+import type { ModelMessage } from 'ai';
 import type { ChatModelAdapter, ChatModelRunResult } from '@assistant-ui/react';
 import { getAIProvider } from '../providers';
 import { aiLogger } from '../logger';
@@ -29,7 +30,7 @@ export interface TauriAdapterOptions {
 }
 
 async function* streamViaApiRoute(
-  messages: Array<{ role: string; content: string }>,
+  messages: ModelMessage[],
   systemPrompt: string,
   settings: AISettings,
   abortSignal?: AbortSignal,
@@ -59,6 +60,43 @@ async function* streamViaApiRoute(
     if (done) break;
     yield decoder.decode(value, { stream: true });
   }
+}
+
+type ModelContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: string };
+
+function toModelContent(
+  content: readonly { type: string; text?: string; image?: string }[],
+  attachments: readonly {
+    content?: readonly { type: string; text?: string; image?: string }[];
+  }[] = [],
+): ModelContentPart[] {
+  const parts: ModelContentPart[] = [];
+  const seenImages = new Set<string>();
+
+  for (const part of content) {
+    if (part.type === 'text' && part.text) {
+      parts.push({ type: 'text', text: part.text });
+    } else if (part.type === 'image' && part.image) {
+      parts.push({ type: 'image', image: part.image });
+      seenImages.add(part.image);
+    }
+  }
+
+  // Assistant UI stores uploaded files on attachments[].content rather than
+  // in the message content array. Merge them into the AI SDK message while
+  // avoiding duplicates for messages restored from history.
+  for (const attachment of attachments) {
+    for (const part of attachment.content ?? []) {
+      if (part.type === 'image' && part.image && !seenImages.has(part.image)) {
+        parts.push({ type: 'image', image: part.image });
+        seenImages.add(part.image);
+      }
+    }
+  }
+
+  return parts;
 }
 
 export function createTauriAdapter(getOptions: () => TauriAdapterOptions): ChatModelAdapter {
@@ -96,12 +134,9 @@ export function createTauriAdapter(getOptions: () => TauriAdapterOptions): ChatM
       aiLogger.chat.send(query.length, backend.kind === 'reedy');
 
       const aiMessages = messages.map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content
-          .filter((c) => c.type === 'text')
-          .map((c) => c.text)
-          .join('\n'),
-      }));
+        role: m.role,
+        content: toModelContent(m.content, m.attachments),
+      })) as ModelMessage[];
 
       const useApiRoute = isWebAppPlatform() && settings.provider === 'ai-gateway';
 

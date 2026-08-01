@@ -27,7 +27,15 @@ export const MessageCard = memo(function MessageCard({
     return (
       <div className='animate-in fade-in mx-auto mb-3 flex w-full justify-end duration-200'>
         <div className='bg-base-200/60 text-base-content max-w-[85%] rounded-lg px-3 py-2 text-sm'>
-          <UserTextPart text={message.text} />
+          {message.attachments?.map((image, index) => (
+            <img
+              key={index}
+              src={image.data}
+              alt={image.filename || 'Attached image'}
+              className='mb-2 max-h-56 max-w-full rounded border object-contain'
+            />
+          ))}
+          {message.text && <UserTextPart text={message.text} />}
         </div>
       </div>
     );

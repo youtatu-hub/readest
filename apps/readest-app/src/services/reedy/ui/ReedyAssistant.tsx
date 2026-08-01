@@ -38,7 +38,7 @@ import { MemoryConsolidator } from '../memory/MemoryConsolidator';
 import { sliceSinceLastId } from '../memory/consolidatorCursor';
 import { SkillRegistry } from '../skills/SkillRegistry';
 import type { Skill } from '../skills/types';
-import { useReedyStore } from '../store/reedyStore';
+import { useReedyStore, type ReedyImageAttachment } from '../store/reedyStore';
 import { useReedyTurn } from './useReedyTurn';
 import { AgentThread } from './AgentThread';
 import { Composer } from './Composer';
@@ -338,12 +338,13 @@ export function ReedyAssistant({
   }, [reedy, bookDoc, bookHash, models.embedding]);
 
   const handleSend = useCallback(
-    (text: string) => {
+    (text: string, imageAttachments: ReedyImageAttachment[]) => {
       if (!runtime) return;
       void send({
         sessionId: bookHash,
         bookHash,
         userMessage: text,
+        imageAttachments,
         toolAllowlist: activeSkill?.toolAllowlist ?? null,
       });
     },

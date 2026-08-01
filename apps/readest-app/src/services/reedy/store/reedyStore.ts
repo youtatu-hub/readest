@@ -38,10 +38,18 @@ export type ReedyMessagePart =
   | { type: 'error'; message: string; kind: string }
   | { type: 'abort'; partial: boolean };
 
+export interface ReedyImageAttachment {
+  type: 'image';
+  data: string;
+  mimeType: string;
+  filename?: string;
+}
+
 export interface ReedyUserMessage {
   id: string;
   role: 'user';
   text: string;
+  attachments?: ReedyImageAttachment[];
   createdAt: number;
 }
 
@@ -67,7 +75,7 @@ export interface ReedyStoreState {
   abortController: AbortController | null;
 
   // Mutations
-  startUserTurn: (text: string) => void;
+  startUserTurn: (text: string, attachments?: ReedyImageAttachment[]) => void;
   startAssistantTurn: (assistantMessageId: string, controller: AbortController) => void;
   applyEvent: (event: ReedyEvent) => void;
   finishTurn: () => void;
@@ -80,11 +88,12 @@ export const useReedyStore = create<ReedyStoreState>((set, get) => ({
   activeAssistantMessageId: null,
   abortController: null,
 
-  startUserTurn(text) {
+  startUserTurn(text, attachments) {
     const msg: ReedyUserMessage = {
       id: randomId('user'),
       role: 'user',
       text,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
       createdAt: Date.now(),
     };
     set((s) => ({ messages: [...s.messages, msg], isRunning: true }));

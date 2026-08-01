@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   AssistantRuntimeProvider,
+  SimpleImageAttachmentAdapter,
   useLocalRuntime,
   useAssistantRuntime,
   type ThreadMessage,
@@ -24,7 +25,12 @@ import {
   type RetrievalBackend,
   type SourceItem,
 } from '@/services/ai/adapters';
-import type { EmbeddingProgress, AISettings, AIMessage } from '@/services/ai/types';
+import type {
+  EmbeddingProgress,
+  AISettings,
+  AIMessage,
+  AIMessageAttachment,
+} from '@/services/ai/types';
 import type { RetrievedChunk } from '@/services/reedy/retrieval/BookRetriever';
 import { useEnv } from '@/context/EnvContext';
 import { isTauriAppPlatform } from '@/services/environment';
@@ -42,9 +48,17 @@ function convertToExportedMessages(
   aiMessages: AIMessage[],
 ): { message: ThreadMessage; parentId: string | null }[] {
   return aiMessages.map((msg, idx) => {
+    const imageParts = (msg.attachments ?? []).map((attachment) => ({
+      type: 'image' as const,
+      image: attachment.data,
+      filename: attachment.filename,
+    }));
     const baseMessage = {
       id: msg.id,
-      content: [{ type: 'text' as const, text: msg.content }],
+      content: [
+        ...(msg.content ? [{ type: 'text' as const, text: msg.content }] : []),
+        ...imageParts,
+      ],
       createdAt: new Date(msg.createdAt),
       metadata: { custom: {} },
     };
@@ -55,7 +69,20 @@ function convertToExportedMessages(
         ? ({
             ...baseMessage,
             role: 'user' as const,
-            attachments: [] as const,
+            attachments: (msg.attachments ?? []).map((attachment, attachmentIndex) => ({
+              id: msg.id + '-attachment-' + attachmentIndex,
+              type: 'image' as const,
+              name: attachment.filename || 'image-' + (attachmentIndex + 1),
+              contentType: attachment.mimeType,
+              status: { type: 'complete' as const },
+              content: [
+                {
+                  type: 'image' as const,
+                  image: attachment.data,
+                  filename: attachment.filename,
+                },
+              ],
+            })),
           } as unknown as ThreadMessage)
         : ({
             ...baseMessage,
@@ -168,11 +195,24 @@ const AIAssistantChat = ({
             .map((part) => part.text)
             .join('\n');
 
-          if (textContent) {
+          const attachments: AIMessageAttachment[] = msg.content
+            .filter(
+              (part): part is { type: 'image'; image: string; filename?: string } =>
+                'type' in part && part.type === 'image',
+            )
+            .map((part) => ({
+              type: 'image' as const,
+              data: part.image,
+              mimeType: part.image.match(/^data:([^;]*);/)?.[1] || 'image/jpeg',
+              filename: part.filename,
+            }));
+
+          if (textContent || attachments.length > 0) {
             await addMessage({
               conversationId: activeConversationId,
               role: msg.role as 'user' | 'assistant',
               content: textContent,
+              ...(attachments.length > 0 ? { attachments } : {}),
             });
           }
         }
@@ -213,8 +253,12 @@ const AIAssistantWithRuntime = ({
   currentTurnId: string | null;
   onSourceClick?: (source: SourceItem) => void;
 }) => {
+  const imageAttachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
   const runtime = useLocalRuntime(adapter, {
-    adapters: historyAdapter ? { history: historyAdapter } : undefined,
+    adapters: {
+      attachments: imageAttachmentAdapter,
+      ...(historyAdapter ? { history: historyAdapter } : {}),
+    },
   });
 
   if (!runtime) return <div className='text-muted-foreground flex h-full items-center justify-center text-sm'>Loading AI chat...</div>;

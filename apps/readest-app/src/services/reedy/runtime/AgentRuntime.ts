@@ -1,4 +1,5 @@
 import { streamText, stepCountIs, type ModelMessage } from 'ai';
+import type { ReedyImageAttachment } from '../store/reedyStore';
 import type { ChatModel } from '../models/ChatModel';
 import type { PromptLayer, BuiltContext } from '../context';
 import { buildPromptContext } from '../context';
@@ -19,6 +20,7 @@ export interface RunTurnInput {
   sessionId: string;
   bookHash: string;
   userMessage: string;
+  imageAttachments?: ReedyImageAttachment[];
   /**
    * Prior message history to seed the conversation. The runtime adds the
    * user message itself; pass everything before it. Defaults to [].
@@ -132,9 +134,16 @@ export class AgentRuntime {
       requestPermission: this.opts.requestPermission ?? (async (): Promise<boolean> => false),
     };
 
+    const userContent = [
+      ...(input.userMessage ? [{ type: 'text' as const, text: input.userMessage }] : []),
+      ...(input.imageAttachments ?? []).map((attachment) => ({
+        type: 'image' as const,
+        image: attachment.data,
+      })),
+    ];
     const messages: ModelMessage[] = [
       ...(input.history ?? []),
-      { role: 'user', content: input.userMessage },
+      { role: 'user', content: userContent },
     ];
 
     let lastUsage: { promptTokens: number; completionTokens: number } | undefined;
