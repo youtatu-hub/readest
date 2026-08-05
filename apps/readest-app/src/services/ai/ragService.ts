@@ -26,6 +26,7 @@ export interface BookDocType {
 }
 
 const indexingStates = new Map<string, IndexingState>();
+const indexingPromises = new Map<string, Promise<void>>();
 
 export async function isBookIndexed(bookHash: string): Promise<boolean> {
   const indexed = await aiStore.isIndexed(bookHash);
@@ -71,6 +72,24 @@ function getEmbeddingModelName(settings: AISettings): string {
 }
 
 export async function indexBook(
+  bookDoc: BookDocType,
+  bookHash: string,
+  settings: AISettings,
+  onProgress?: (progress: EmbeddingProgress) => void,
+): Promise<void> {
+  const existing = indexingPromises.get(bookHash);
+  if (existing) return existing;
+
+  const promise = indexBookInternal(bookDoc, bookHash, settings, onProgress);
+  indexingPromises.set(bookHash, promise);
+  try {
+    await promise;
+  } finally {
+    if (indexingPromises.get(bookHash) === promise) indexingPromises.delete(bookHash);
+  }
+}
+
+async function indexBookInternal(
   bookDoc: BookDocType,
   bookHash: string,
   settings: AISettings,

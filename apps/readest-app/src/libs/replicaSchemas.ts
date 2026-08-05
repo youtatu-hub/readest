@@ -76,6 +76,30 @@ const opdsCatalogFieldsSchema = z
 // shortcut.<action>). The whitelist of accepted field NAMES is
 // enforced client-side by the adapter; the server only enforces the
 // envelope shape and the 64-field / 64 KiB row caps.
+const aiChatFieldsSchema = z.object({
+  bookHash: fieldEnvelopeSchema,
+  title: fieldEnvelopeSchema,
+  createdAt: fieldEnvelopeSchema,
+  updatedAt: fieldEnvelopeSchema,
+});
+
+const aiChatMessageFieldsSchema = z.object({
+  conversationId: fieldEnvelopeSchema,
+  role: fieldEnvelopeSchema,
+  content: fieldEnvelopeSchema,
+  createdAt: fieldEnvelopeSchema,
+  attachments: fieldEnvelopeSchema,
+});
+
+const aiChatAttachmentFieldsSchema = z.object({
+  conversationId: fieldEnvelopeSchema,
+  messageId: fieldEnvelopeSchema,
+  mimeType: fieldEnvelopeSchema,
+  filename: fieldEnvelopeSchema,
+  path: fieldEnvelopeSchema,
+  byteSize: fieldEnvelopeSchema,
+});
+
 const settingsFieldsSchema = z.record(z.string(), fieldEnvelopeWithCipher);
 
 interface KindSpec {
@@ -114,6 +138,27 @@ export const KIND_ALLOWLIST: Record<string, KindSpec> = {
     maxRowsPerUser: 50,
     fields: opdsCatalogFieldsSchema,
     binary: false,
+  },
+  ai_chat: {
+    minSchemaVersion: 1,
+    maxSchemaVersion: 2,
+    maxRowsPerUser: 1000,
+    fields: aiChatFieldsSchema,
+    binary: false,
+  },
+  ai_chat_message: {
+    minSchemaVersion: 1,
+    maxSchemaVersion: 1,
+    maxRowsPerUser: 20000,
+    fields: aiChatMessageFieldsSchema,
+    binary: false,
+  },
+  ai_chat_attachment: {
+    minSchemaVersion: 1,
+    maxSchemaVersion: 1,
+    maxRowsPerUser: 20000,
+    fields: aiChatAttachmentFieldsSchema,
+    binary: true,
   },
   settings: {
     // Singleton row per user (replica_id='singleton'). Holds scalar

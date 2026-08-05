@@ -73,6 +73,7 @@ const toCategory = (id: string): SyncCategory | null => {
   if (id === 'config') return 'progress';
   if (id === 'books') return 'book';
   if (id === 'notes') return 'note';
+  if (id === 'ai_chat_message' || id === 'ai_chat_attachment') return 'ai_chat';
   return null;
 };
 

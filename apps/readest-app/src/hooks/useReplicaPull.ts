@@ -15,6 +15,7 @@ import {
 import { useCustomOPDSStore, findOPDSCatalogByContentId } from '@/store/customOPDSStore';
 import { transferManager } from '@/services/transferManager';
 import { getReplicaSync, subscribeReplicaSyncReady } from '@/services/sync/replicaSync';
+import { getInitializedAppService } from '@/services/environment';
 import { dictionaryAdapter } from '@/services/sync/adapters/dictionary';
 import { fontAdapter } from '@/services/sync/adapters/font';
 import { textureAdapter } from '@/services/sync/adapters/texture';
@@ -45,10 +46,15 @@ import type { ImportedDictionary } from '@/services/dictionaries/types';
 import type { CustomFont } from '@/styles/fonts';
 import type { CustomTexture } from '@/styles/textures';
 import type { OPDSCatalog } from '@/types/opds';
+import type { AIChatAttachmentSyncRecord, AIChatMessageSyncRecord, AIChatSyncRecord } from '@/services/sync/adapters/aiChat';
+import { aiChatAdapter, aiChatAttachmentAdapter, aiChatMessageAdapter, restoreCachedAIChatAttachment } from '@/services/sync/adapters/aiChat';
+import { applyRemoteAIConversation, applyRemoteAIMessage } from '@/services/sync/aiChatSync';
+import { useAIChatStore } from '@/store/aiChatStore';
+import { aiStore } from '@/services/ai/storage/aiStore';
 import type { Hlc, ReplicaRow } from '@/types/replica';
 import type { SystemSettings } from '@/types/settings';
 
-export type ReplicaKind = 'dictionary' | 'font' | 'texture' | 'opds_catalog' | 'settings';
+export type ReplicaKind = 'dictionary' | 'font' | 'texture' | 'opds_catalog' | 'settings' | 'ai_chat' | 'ai_chat_message' | 'ai_chat_attachment';
 
 export interface UseReplicaPullOpts {
   /** Replica kinds this page wants pulled. */
@@ -262,6 +268,51 @@ const opdsCatalogPullConfig: ReplicaPullConfig<OPDSCatalog> = {
   softDeleteByContentId: (id) => useCustomOPDSStore.getState().softDeleteByContentId(id),
 };
 
+const aiChatPullConfig: ReplicaPullConfig<AIChatSyncRecord> = {
+  kind: 'ai_chat',
+  adapter: aiChatAdapter,
+  findByContentId: (id) => {
+    const conversation = useAIChatStore.getState().conversations.find((item) => item.id === id);
+    return conversation ? { id, name: conversation.title, conversation, messages: [] } : undefined;
+  },
+  applyRemote: (record) => {
+    void applyRemoteAIConversation(record).then(() => {
+      const state = useAIChatStore.getState();
+      if (state.currentBookHash === record.conversation.bookHash) {
+        void state.refreshConversations(record.conversation.bookHash);
+      }
+    });
+  },
+  softDeleteByContentId: (id) => {
+    const state = useAIChatStore.getState();
+    if (state.activeConversationId === id) state.clearActiveConversation();
+    void aiStore.deleteConversation(id).then(() => {
+      const current = useAIChatStore.getState();
+      if (current.currentBookHash) void current.refreshConversations(current.currentBookHash);
+    });
+  },
+};
+
+const aiChatMessagePullConfig: ReplicaPullConfig<AIChatMessageSyncRecord> = {
+  kind: 'ai_chat_message',
+  adapter: aiChatMessageAdapter,
+  findByContentId: () => undefined,
+  applyRemote: (record) => { void applyRemoteAIMessage(record); },
+  softDeleteByContentId: () => {},
+};
+
+const aiChatAttachmentPullConfig: ReplicaPullConfig<AIChatAttachmentSyncRecord> = {
+  kind: 'ai_chat_attachment',
+  baseDir: 'Images',
+  adapter: aiChatAttachmentAdapter,
+  findByContentId: () => undefined,
+  applyRemote: (record) => {
+    const appService = getInitializedAppService();
+    if (appService) void restoreCachedAIChatAttachment(record, appService);
+  },
+  softDeleteByContentId: () => {},
+};
+
 const settingsPullConfig = (envConfig: EnvConfigType): ReplicaPullConfig<SettingsRemoteRecord> => ({
   kind: 'settings',
   // metadata-only — no baseDir
@@ -360,6 +411,21 @@ const runPullForKind = async (
           pullOpts,
           pullOverride,
         ),
+      );
+      return;
+    case 'ai_chat':
+      await replicaPullAndApply(
+        buildReplicaPullDeps(ctx.manager, service, envConfig, aiChatPullConfig, pullOpts, pullOverride),
+      );
+      return;
+    case 'ai_chat_message':
+      await replicaPullAndApply(
+        buildReplicaPullDeps(ctx.manager, service, envConfig, aiChatMessagePullConfig, pullOpts, pullOverride),
+      );
+      return;
+    case 'ai_chat_attachment':
+      await replicaPullAndApply(
+        buildReplicaPullDeps(ctx.manager, service, envConfig, aiChatAttachmentPullConfig, pullOpts, pullOverride),
       );
       return;
     case 'settings':

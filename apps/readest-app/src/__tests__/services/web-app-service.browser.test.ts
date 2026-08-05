@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { WebAppService } from '@/services/webAppService';
 import { fsTests } from './suites/fs-tests';
 import { libraryTests } from './suites/library-tests';
@@ -59,6 +59,18 @@ describe('WebAppService', () => {
 
   it('should set localBooksDir after init', () => {
     expect(service.localBooksDir).toBe('Readest/Books');
+  });
+
+  it('reuses one IndexedDB connection across filesystem operations', async () => {
+    const openSpy = vi.spyOn(indexedDB, 'open');
+
+    await service.exists('first.epub', 'Books');
+    await service.exists('second.epub', 'Books');
+    await service.writeFile('connection-test.txt', 'Data', 'ok');
+    await service.readFile('connection-test.txt', 'Data', 'text');
+
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 
   fsTests(() => service);

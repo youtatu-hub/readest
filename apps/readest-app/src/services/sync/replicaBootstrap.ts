@@ -6,7 +6,9 @@ import { fontAdapter, FONT_KIND } from './adapters/font';
 import { textureAdapter, TEXTURE_KIND } from './adapters/texture';
 import { opdsCatalogAdapter } from './adapters/opdsCatalog';
 import { settingsAdapter } from './adapters/settings';
+import { aiChatAdapter, aiChatMessageAdapter, aiChatAttachmentAdapter, restoreAIChatAttachment } from './adapters/aiChat';
 import { getReplicaPersistEnv } from './replicaPersist';
+import { getInitializedAppService } from '@/services/environment';
 import { getReplicaAdapter, registerReplicaAdapter } from './replicaRegistry';
 import { registerReplicaDownloadHandler } from './replicaTransferIntegration';
 import type { ReplicaAdapter } from './replicaRegistry';
@@ -19,6 +21,9 @@ const KNOWN_ADAPTERS: ReplicaAdapter<unknown>[] = [
   opdsCatalogAdapter as unknown as ReplicaAdapter<unknown>,
   // Bundled scalar settings — singleton row, no binary.
   settingsAdapter as unknown as ReplicaAdapter<unknown>,
+  aiChatAdapter as unknown as ReplicaAdapter<unknown>,
+  aiChatMessageAdapter as unknown as ReplicaAdapter<unknown>,
+  aiChatAttachmentAdapter as unknown as ReplicaAdapter<unknown>,
 ];
 
 let didBootstrap = false;
@@ -55,6 +60,11 @@ export const bootstrapReplicaAdapters = (): void => {
   // without re-reading disk. Mounting only happens when the user
   // selects the texture (via applyTexture), so no automatic mount
   // here. Falls back to flag-only when persist env hasn't landed yet.
+  registerReplicaDownloadHandler('ai_chat_attachment', (replicaId) => {
+    const appService = getInitializedAppService();
+    if (appService) void restoreAIChatAttachment(replicaId, appService);
+  });
+
   registerReplicaDownloadHandler(TEXTURE_KIND, (replicaId) => {
     const env = getReplicaPersistEnv();
     if (!env) {

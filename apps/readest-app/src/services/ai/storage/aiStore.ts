@@ -5,12 +5,13 @@ import { aiLogger } from '../logger';
 const lunr = require('lunr') as typeof import('lunr');
 
 const DB_NAME = 'readest-ai';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const CHUNKS_STORE = 'chunks';
 const META_STORE = 'bookMeta';
 const BM25_STORE = 'bm25Indices';
 const CONVERSATIONS_STORE = 'conversations';
 const MESSAGES_STORE = 'messages';
+const DELETED_CONVERSATIONS_STORE = 'deletedConversations';
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
@@ -26,8 +27,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-class AIStore {
+export class AIStore {
   private db: IDBDatabase | null = null;
+  private dbPromise: Promise<IDBDatabase> | null = null;
   private chunkCache = new Map<string, TextChunk[]>();
   private indexCache = new Map<string, lunr.Index>();
   private metaCache = new Map<string, BookIndexMeta>();
@@ -41,6 +43,7 @@ class AIStore {
         // ignore close errors
       }
       this.db = null;
+      this.dbPromise = null;
     }
     this.chunkCache.clear();
     this.indexCache.clear();
@@ -49,17 +52,43 @@ class AIStore {
     await this.openDB();
   }
 
-  private async openDB(): Promise<IDBDatabase> {
-    if (this.db) return this.db;
-    return new Promise((resolve, reject) => {
+  private openDB(): Promise<IDBDatabase> {
+    if (this.db) return Promise.resolve(this.db);
+    if (this.dbPromise) return this.dbPromise;
+    this.dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
+      let settled = false;
       request.onerror = () => {
+        if (settled) return;
+        settled = true;
         aiLogger.store.error('openDB', request.error?.message || 'Unknown error');
+        this.dbPromise = null;
         reject(request.error);
       };
       request.onsuccess = () => {
-        this.db = request.result;
-        resolve(this.db);
+        const db = request.result;
+        if (settled) {
+          db.close();
+          return;
+        }
+        settled = true;
+        db.onversionchange = () => {
+          db.close();
+          if (this.db === db) {
+            this.db = null;
+            this.dbPromise = null;
+          }
+        };
+        this.db = db;
+        resolve(db);
+      };
+      request.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        const error = new Error('AI storage upgrade is blocked by another open Readest window');
+        aiLogger.store.error('openDB', error.message);
+        this.dbPromise = null;
+        reject(error);
       };
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
@@ -91,8 +120,12 @@ class AIStore {
           const msgStore = db.createObjectStore(MESSAGES_STORE, { keyPath: 'id' });
           msgStore.createIndex('conversationId', 'conversationId', { unique: false });
         }
+        if (!db.objectStoreNames.contains(DELETED_CONVERSATIONS_STORE)) {
+          db.createObjectStore(DELETED_CONVERSATIONS_STORE, { keyPath: 'id' });
+        }
       };
     });
+    return this.dbPromise;
   }
 
   async saveMeta(meta: BookIndexMeta): Promise<void> {
@@ -127,7 +160,9 @@ class AIStore {
 
   async isIndexed(bookHash: string): Promise<boolean> {
     const meta = await this.getMeta(bookHash);
-    return meta !== null && meta.totalChunks > 0;
+    if (!meta) return false;
+    if (meta.totalChunks === 0) return true;
+    return (await this.getChunks(bookHash)).length >= meta.totalChunks;
   }
 
   async saveChunks(chunks: TextChunk[]): Promise<void> {
@@ -329,11 +364,28 @@ class AIStore {
 
   // conversation persistence methods
 
+  async isConversationDeleted(id: string): Promise<boolean> {
+    const db = await this.openDB();
+    return new Promise((resolve, reject) => {
+      const request = db
+        .transaction(DELETED_CONVERSATIONS_STORE, 'readonly')
+        .objectStore(DELETED_CONVERSATIONS_STORE)
+        .get(id);
+      request.onsuccess = () => resolve(Boolean(request.result));
+      request.onerror = () => reject(request.error);
+    });
+  }
+
   async saveConversation(conversation: AIConversation): Promise<void> {
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(CONVERSATIONS_STORE, 'readwrite');
-      tx.objectStore(CONVERSATIONS_STORE).put(conversation);
+      const tx = db.transaction([CONVERSATIONS_STORE, DELETED_CONVERSATIONS_STORE], 'readwrite');
+      const deletedRequest = tx.objectStore(DELETED_CONVERSATIONS_STORE).get(conversation.id);
+      deletedRequest.onsuccess = () => {
+        if (!deletedRequest.result) {
+          tx.objectStore(CONVERSATIONS_STORE).put(conversation);
+        }
+      };
       tx.oncomplete = () => {
         this.conversationCache.delete(conversation.bookHash);
         resolve();
@@ -370,9 +422,12 @@ class AIStore {
   async deleteConversation(id: string): Promise<void> {
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([CONVERSATIONS_STORE, MESSAGES_STORE], 'readwrite');
+      const tx = db.transaction(
+        [CONVERSATIONS_STORE, MESSAGES_STORE, DELETED_CONVERSATIONS_STORE],
+        'readwrite',
+      );
 
-      // delete conversation
+      tx.objectStore(DELETED_CONVERSATIONS_STORE).put({ id, deletedAt: Date.now() });
       tx.objectStore(CONVERSATIONS_STORE).delete(id);
 
       // delete all messages for this conversation
@@ -424,8 +479,15 @@ class AIStore {
   async saveMessage(message: AIMessage): Promise<void> {
     const db = await this.openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(MESSAGES_STORE, 'readwrite');
-      tx.objectStore(MESSAGES_STORE).put(message);
+      const tx = db.transaction([MESSAGES_STORE, DELETED_CONVERSATIONS_STORE], 'readwrite');
+      const deletedRequest = tx
+        .objectStore(DELETED_CONVERSATIONS_STORE)
+        .get(message.conversationId);
+      deletedRequest.onsuccess = () => {
+        if (!deletedRequest.result) {
+          tx.objectStore(MESSAGES_STORE).put(message);
+        }
+      };
       tx.oncomplete = () => resolve();
       tx.onerror = () => {
         aiLogger.store.error('saveMessage', tx.error?.message || 'TX error');

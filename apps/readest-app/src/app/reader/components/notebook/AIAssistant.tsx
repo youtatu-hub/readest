@@ -11,12 +11,18 @@ import {
 } from '@assistant-ui/react';
 
 import { useTranslation } from '@/hooks/useTranslation';
+import { useReplicaPull } from '@/hooks/useReplicaPull';
+import { useAutoBookIndex } from '@/hooks/useAutoBookIndex';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
 import { useBookProgress } from '@/store/readerProgressStore';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { aiLogger, createTauriAdapter } from '@/services/ai';
+import {
+  buildRestoredMessageParts,
+  extractPersistedImageAttachments,
+} from '@/services/ai/messagePersistence';
 import {
   LegacyIdbBackend,
   ReedyBackend,
@@ -25,12 +31,7 @@ import {
   type RetrievalBackend,
   type SourceItem,
 } from '@/services/ai/adapters';
-import type {
-  EmbeddingProgress,
-  AISettings,
-  AIMessage,
-  AIMessageAttachment,
-} from '@/services/ai/types';
+import type { EmbeddingProgress, AISettings, AIMessage } from '@/services/ai/types';
 import type { RetrievedChunk } from '@/services/reedy/retrieval/BookRetriever';
 import { useEnv } from '@/context/EnvContext';
 import { isTauriAppPlatform } from '@/services/environment';
@@ -48,41 +49,20 @@ function convertToExportedMessages(
   aiMessages: AIMessage[],
 ): { message: ThreadMessage; parentId: string | null }[] {
   return aiMessages.map((msg, idx) => {
-    const imageParts = (msg.attachments ?? []).map((attachment) => ({
-      type: 'image' as const,
-      image: attachment.data,
-      filename: attachment.filename,
-    }));
+    const restored = buildRestoredMessageParts(msg);
     const baseMessage = {
       id: msg.id,
-      content: [
-        ...(msg.content ? [{ type: 'text' as const, text: msg.content }] : []),
-        ...imageParts,
-      ],
+      content: restored.content,
       createdAt: new Date(msg.createdAt),
       metadata: { custom: {} },
     };
 
-    // Build role-specific message to satisfy ThreadMessage union type
     const threadMessage: ThreadMessage =
       msg.role === 'user'
         ? ({
             ...baseMessage,
             role: 'user' as const,
-            attachments: (msg.attachments ?? []).map((attachment, attachmentIndex) => ({
-              id: msg.id + '-attachment-' + attachmentIndex,
-              type: 'image' as const,
-              name: attachment.filename || 'image-' + (attachmentIndex + 1),
-              contentType: attachment.mimeType,
-              status: { type: 'complete' as const },
-              content: [
-                {
-                  type: 'image' as const,
-                  image: attachment.data,
-                  filename: attachment.filename,
-                },
-              ],
-            })),
+            attachments: restored.attachments,
           } as unknown as ThreadMessage)
         : ({
             ...baseMessage,
@@ -195,17 +175,7 @@ const AIAssistantChat = ({
             .map((part) => part.text)
             .join('\n');
 
-          const attachments: AIMessageAttachment[] = msg.content
-            .filter(
-              (part): part is { type: 'image'; image: string; filename?: string } =>
-                'type' in part && part.type === 'image',
-            )
-            .map((part) => ({
-              type: 'image' as const,
-              data: part.image,
-              mimeType: part.image.match(/^data:([^;]*);/)?.[1] || 'image/jpeg',
-              filename: part.filename,
-            }));
+          const attachments = extractPersistedImageAttachments(msg);
 
           if (textContent || attachments.length > 0) {
             await addMessage({
@@ -222,6 +192,7 @@ const AIAssistantChat = ({
 
   return (
     <AIAssistantWithRuntime
+      key={activeConversationId ?? 'new-conversation'}
       adapter={adapter}
       historyAdapter={historyAdapter}
       onResetIndex={onResetIndex}
@@ -261,7 +232,12 @@ const AIAssistantWithRuntime = ({
     },
   });
 
-  if (!runtime) return <div className='text-muted-foreground flex h-full items-center justify-center text-sm'>Loading AI chat...</div>;
+  if (!runtime)
+    return (
+      <div className='text-muted-foreground flex h-full items-center justify-center text-sm'>
+        Loading AI chat...
+      </div>
+    );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -358,6 +334,8 @@ const AIAssistant = ({ bookKey }: AIAssistantProps) => {
 };
 
 const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
+  // AI history sync is deferred until the notebook panel actually mounts.
+  useReplicaPull({ kinds: ['ai_chat', 'ai_chat_message', 'ai_chat_attachment'], delayMs: 1_500 });
   const _ = useTranslation();
   const { appService } = useEnv();
   const { settings } = useSettingsStore();
@@ -447,6 +425,19 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
     }
   }, [bookData?.bookDoc, bookHash, aiSettings, backend]);
 
+  useAutoBookIndex({
+    bookHash,
+    ready:
+      aiSettings?.enabled === true &&
+      !isLoading &&
+      !indexed &&
+      !isIndexing &&
+      !indexError &&
+      !indexCheckError &&
+      Boolean(bookData?.bookDoc && backend),
+    startIndexing: handleIndex,
+  });
+
   const handleResetIndex = useCallback(async () => {
     if (!appService || !backend) return;
     if (!(await appService.ask(_('Are you sure you want to re-index this book?')))) return;
@@ -484,7 +475,9 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
       <div className='flex h-full flex-col items-center justify-center gap-3 p-4 text-center'>
         <AlertTriangle className='text-warning size-6' />
         <div className='max-w-full'>
-          <h3 className='text-foreground mb-0.5 text-sm font-medium'>{_('Index status unavailable')}</h3>
+          <h3 className='text-foreground mb-0.5 text-sm font-medium'>
+            {_('Index status unavailable')}
+          </h3>
           <p className='text-muted-foreground break-words text-xs'>{indexCheckError}</p>
         </div>
         <Button
@@ -565,7 +558,12 @@ const LegacyAIAssistant = ({ bookKey }: AIAssistantProps) => {
     );
   }
 
-  if (!backend) return <div className='text-muted-foreground flex h-full items-center justify-center p-4 text-sm'>AI index backend unavailable</div>;
+  if (!backend)
+    return (
+      <div className='text-muted-foreground flex h-full items-center justify-center p-4 text-sm'>
+        AI index backend unavailable
+      </div>
+    );
 
   return (
     <AIAssistantChat

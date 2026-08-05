@@ -268,6 +268,7 @@ export type SyncCategory =
   | 'texture'
   | 'opds_catalog'
   | 'settings'
+  | 'ai_chat'
   | 'credentials'
   | 'stats';
 
@@ -280,6 +281,7 @@ export const SYNC_CATEGORIES: readonly SyncCategory[] = [
   'texture',
   'opds_catalog',
   'settings',
+  'ai_chat',
   'stats',
   'credentials',
 ] as const;

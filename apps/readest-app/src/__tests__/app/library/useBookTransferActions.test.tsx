@@ -70,11 +70,11 @@ const makeBook = (over: Partial<Book> = {}): Book => ({
   ...over,
 });
 
-const setup = () => {
+const setup = (appService: AppService | null = null) => {
   const updateBook = vi.fn(async (_envConfig: EnvConfigType, _book: Book) => {});
   const updateBookTransferProgress = vi.fn((_bookHash: string, _progress: ProgressPayload) => {});
   const { result } = renderHook(() =>
-    useBookTransferActions(envConfig, null, updateBook, updateBookTransferProgress),
+    useBookTransferActions(envConfig, appService, updateBook, updateBookTransferProgress),
   );
   return { result, updateBook };
 };
@@ -132,6 +132,43 @@ describe('useBookTransferActions download routing (issue #5062)', () => {
     expect(runFileBookDownload).not.toHaveBeenCalled();
     expect(queueDownload).toHaveBeenCalledWith(book, 1);
     expect(ok).toBe(true);
+  });
+
+  it('verifies that a direct cloud download actually landed before reporting success', async () => {
+    const downloadBook = vi.fn(async () => {});
+    const isBookAvailable = vi.fn(async () => true);
+    const appService = { downloadBook, isBookAvailable } as unknown as AppService;
+    const { result, updateBook } = setup(appService);
+    const book = makeBook({ uploadedAt: 12345, downloadedAt: null });
+
+    const ok = await result.current.handleBookDownload(book, { queued: false });
+
+    expect(downloadBook).toHaveBeenCalledWith(book, false, false, expect.any(Function));
+    expect(isBookAvailable).toHaveBeenCalledWith(book);
+    expect(updateBook).toHaveBeenCalledWith(envConfig, book);
+    expect(ok).toBe(true);
+  });
+
+  it('fails a direct cloud download when IndexedDB did not retain the file', async () => {
+    const downloadBook = vi.fn(async () => {});
+    const isBookAvailable = vi.fn(async () => false);
+    const appService = { downloadBook, isBookAvailable } as unknown as AppService;
+    const dispatchSpy = vi.spyOn(eventDispatcher, 'dispatch');
+    const { result, updateBook } = setup(appService);
+    const book = makeBook({ uploadedAt: 12345, downloadedAt: null });
+
+    const ok = await result.current.handleBookDownload(book, { queued: false });
+
+    expect(isBookAvailable).toHaveBeenCalledWith(book);
+    expect(updateBook).not.toHaveBeenCalled();
+    expect(ok).toBe(false);
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      'toast',
+      expect.objectContaining({
+        type: 'error',
+        message: 'Failed to download book: Title',
+      }),
+    );
   });
 
   it('falls back to a file backend when the book is not in Readest Cloud storage', async () => {

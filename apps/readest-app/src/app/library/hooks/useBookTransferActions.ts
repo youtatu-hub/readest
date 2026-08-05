@@ -102,9 +102,14 @@ export const useBookTransferActions = (
 
       if (redownload || !queued) {
         try {
-          await appService?.downloadBook(book, false, redownload, (progress) => {
+          if (!appService) {
+            throw new Error('App service is not available');
+          }
+          await appService.downloadBook(book, false, redownload, (progress) => {
             updateBookTransferProgress(book.hash, progress);
           });
+          const available = await appService.isBookAvailable(book);
+          if (!available) throw new Error('Downloaded book is not available locally');
           await updateBook(envConfig, book);
           eventDispatcher.dispatch('toast', {
             type: 'info',

@@ -51,7 +51,6 @@ export const useOpenBook = ({ setLoading, handleBookDownload }: UseOpenBookOptio
       const loadingTimeout = setTimeout(() => setLoading(true), 200);
       try {
         available = await handleBookDownload(book, { queued: false });
-        await updateBook(envConfig, book);
       } finally {
         if (loadingTimeout) clearTimeout(loadingTimeout);
         setLoading(false);

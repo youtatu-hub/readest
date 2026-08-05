@@ -25,6 +25,8 @@ backups/                      本地备份目录
 
 ## 2. 本服务器部署方式
 
+> **固定约定：** 在本服务器上需要重新构建或部署 Readest 时，先查看并使用 `/home/readest/bin/` 下的脚本；不要因为宿主机缺少 Node/pnpm 就假定无法构建。Docker 构建环境由启动脚本提供。
+
 本项目在当前服务器上已有两个脚本：
 
 ```bash
@@ -100,6 +102,7 @@ grep -RIlE 'quota|Quota|translation|limit|usage' apps/readest-app/src 2>/dev/nul
 如果只是看设置相关，优先限定：
 
 ```bash
+cd /home/readest
 grep -RIlE 'quota|Quota|translation|subscription|storage' \
   apps/readest-app/src/app/user \
   apps/readest-app/src/components \
@@ -286,3 +289,45 @@ https://github.com/youtatu-hub/readest.git
   - 核心逻辑变化
   - 是否需要 rebuild/restart
   - 如果未运行构建，说明原因
+
+
+## 9. AI 功能问题排查上下文（2026-03）
+
+### 用户反馈
+
+当前 AI 功能有三个需要优先处理的问题：
+
+1. 聊天内容只在当前设备可见，换一个地方/设备登录后没有同步。
+2. 已经完成索引的书，再次打开当前会话时仍然需要重新索引。
+3. 聊天中发送的图片在重新打开会话后消失。
+
+用户希望把重要的分析结论和项目入口持续记录在 Markdown 中，减少重复搜索。
+
+### 关键代码入口
+
+apps/readest-app/src/store/aiChatStore.ts
+apps/readest-app/src/services/ai/storage/aiStore.ts
+apps/readest-app/src/services/ai/types.ts
+apps/readest-app/src/services/ai/ragService.ts
+apps/readest-app/src/services/ai/adapters/LegacyIdbBackend.ts
+apps/readest-app/src/services/ai/adapters/ReedyBackend.ts
+apps/readest-app/src/services/reedy/retrieval/BookIndexer.ts
+apps/readest-app/src/app/reader/components/notebook/AIAssistant.tsx
+apps/readest-app/src/app/reader/components/sidebar/ChatHistoryView.tsx
+apps/readest-app/src/services/sync/
+apps/readest-app/src/__tests__/store/ai-chat-store.test.ts
+apps/readest-app/src/__tests__/reedy/BookIndexer.test.ts
+
+### 初步判断（待测试确认）
+
+- aiStore 当前使用 IndexedDB 保存会话、消息、书籍 chunks、BM25 数据和索引元数据。IndexedDB 是设备本地存储，不会自动进入现有跨设备同步链路，因此聊天记录不能跨设备同步。
+- 旧版 LegacyIdbBackend 直接读取本地 AI 索引；换设备或清理本地数据后，索引不会存在。需要明确区分索引元数据/可重建状态和设备本地向量数据，并在打开会话时避免仅因 UI 初始化而重复索引。
+- 图片消息的保存和恢复经过 AIMessage.attachments、AIAssistant.tsx 中的消息转换以及 SimpleImageAttachmentAdapter；需要保证持久化格式包含可恢复的图片内容或稳定的同步文件引用，不能依赖仅存在于当前渲染过程的临时对象。
+- Reedy 后端使用本地 reedy.db，相关入口是 ReedyBackend 和 BookIndexer；需要确认 indexingStatus/元数据读取是否在会话打开前完成，以及 embedding model 变化时的版本判定。
+
+### 调查约定
+
+- 修改前先为每个问题增加可复现的单元测试，遵循 apps/readest-app/.agents/rules/test-first.md。
+- 优先修复持久化/同步数据模型，而不是在 UI 层增加临时缓存。
+- 任何 AI 数据同步设计都要考虑图片体积、鉴权、跨设备恢复和旧数据迁移。
+- 修改完成后按 apps/readest-app/.agents/rules/verification.md 执行适用的 pnpm test、pnpm lint 等检查。

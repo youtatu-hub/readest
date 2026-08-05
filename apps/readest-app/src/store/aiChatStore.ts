@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { AIConversation, AIMessage } from '@/services/ai/types';
 import { aiStore } from '@/services/ai/storage/aiStore';
+import { publishAIConversation, publishAIMessage, deleteAIConversation } from '@/services/sync/aiChatSync';
 
 interface AIChatState {
   activeConversationId: string | null;
@@ -10,6 +11,7 @@ interface AIChatState {
   currentBookHash: string | null;
 
   loadConversations: (bookHash: string) => Promise<void>;
+  refreshConversations: (bookHash: string) => Promise<void>;
   setActiveConversation: (id: string | null) => Promise<void>;
   createConversation: (bookHash: string, title: string) => Promise<string>;
   addMessage: (message: Omit<AIMessage, 'id' | 'createdAt'>) => Promise<void>;
@@ -21,6 +23,12 @@ interface AIChatState {
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+const runBackgroundSync = (task: Promise<void>, failureMessage: string): void => {
+  void task.catch((error) => {
+    console.warn(failureMessage, error);
+  });
+};
 
 export const useAIChatStore = create<AIChatState>((set, get) => ({
   activeConversationId: null,
@@ -44,6 +52,11 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
     } catch {
       set({ isLoadingHistory: false });
     }
+  },
+
+  refreshConversations: async (bookHash: string) => {
+    const conversations = await aiStore.getConversations(bookHash);
+    set({ conversations, currentBookHash: bookHash, isLoadingHistory: false });
   },
 
   setActiveConversation: async (id: string | null) => {
@@ -75,6 +88,10 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       updatedAt: now,
     };
     await aiStore.saveConversation(conversation);
+    runBackgroundSync(
+      publishAIConversation(conversation),
+      'Unable to sync newly created AI conversation',
+    );
     const conversations = await aiStore.getConversations(bookHash);
     set({
       conversations,
@@ -86,22 +103,42 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   },
 
   addMessage: async (message: Omit<AIMessage, 'id' | 'createdAt'>) => {
-    const id = generateId();
     const fullMessage: AIMessage = {
       ...message,
-      id,
+      id: generateId(),
       createdAt: Date.now(),
     };
     await aiStore.saveMessage(fullMessage);
+    runBackgroundSync(
+      publishAIMessage(fullMessage).then(async () => {
+        const messages = await aiStore.getMessages(fullMessage.conversationId);
+        const persisted = messages.find((item) => item.id === fullMessage.id);
+        if (persisted) {
+          set((state) => ({
+            messages: state.messages.map((item) => item.id === persisted.id ? persisted : item),
+          }));
+        }
+      }),
+      'Unable to sync AI message',
+    );
 
     // update conversation updatedAt
     const { activeConversationId, currentBookHash } = get();
     if (activeConversationId && currentBookHash) {
       const conversations = get().conversations;
-      const conv = conversations.find((c) => c.id === activeConversationId);
+      const conv = conversations.find((item) => item.id === activeConversationId);
       if (conv) {
-        conv.updatedAt = Date.now();
-        await aiStore.saveConversation(conv);
+        const updatedConversation = { ...conv, updatedAt: Date.now() };
+        await aiStore.saveConversation(updatedConversation);
+        runBackgroundSync(
+          publishAIConversation(updatedConversation),
+          'Unable to sync updated AI conversation',
+        );
+        set((state) => ({
+          conversations: state.conversations.map((item) =>
+            item.id === updatedConversation.id ? updatedConversation : item,
+          ),
+        }));
       }
     }
 
@@ -113,6 +150,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   deleteConversation: async (id: string) => {
     const { currentBookHash, activeConversationId } = get();
     await aiStore.deleteConversation(id);
+    runBackgroundSync(deleteAIConversation(id), 'Unable to sync deleted AI conversation');
 
     if (currentBookHash) {
       const conversations = await aiStore.getConversations(currentBookHash);
@@ -126,6 +164,13 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   renameConversation: async (id: string, title: string) => {
     const { currentBookHash } = get();
     await aiStore.updateConversationTitle(id, title);
+    const renamedConversation = get().conversations.find((item) => item.id === id);
+    if (renamedConversation) {
+      runBackgroundSync(
+        publishAIConversation({ ...renamedConversation, title, updatedAt: Date.now() }),
+        'Unable to sync renamed AI conversation',
+      );
+    }
 
     if (currentBookHash) {
       const conversations = await aiStore.getConversations(currentBookHash);

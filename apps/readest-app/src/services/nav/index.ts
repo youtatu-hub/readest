@@ -116,8 +116,11 @@ export const updateToc = async (
  * result is persisted to Books/{hash}/nav.json and replayed via
  * hydrateBookNav on subsequent opens.
  */
-export const computeBookNav = async (bookDoc: BookDoc): Promise<BookNav> => {
-  const tocClone = cloneTocItems(bookDoc.toc ?? []);
+export const computeBookNav = async (
+  bookDoc: BookDoc,
+  sourceToc: TOCItem[] = bookDoc.toc ?? [],
+): Promise<BookNav> => {
+  const tocClone = cloneTocItems(sourceToc);
   const sections: Record<string, BookNavSection> = {};
   const enrichedNav = await enrichTocFromNavElements(bookDoc, tocClone);
 

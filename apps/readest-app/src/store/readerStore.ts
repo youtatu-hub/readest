@@ -21,7 +21,8 @@ import {
 import type { FileSystem } from '@/types/system';
 import { isFeedBookUrl, parseFeedBookUrl } from '@/services/rss/feedBookUrl';
 import { openFeedBookDoc } from '@/services/rss/feedReader';
-import { BOOK_NAV_VERSION, computeBookNav, hydrateBookNav, updateToc } from '@/services/nav';
+import { updateToc } from '@/services/nav';
+import { prepareBookNavigation } from '@/services/nav/bookNavCache';
 import { formatTitle, getMetadataHash, getPrimaryLanguage } from '@/utils/book';
 import { getBaseFilename } from '@/utils/path';
 import { SUPPORTED_LANGNAMES } from '@/services/constants';
@@ -242,26 +243,35 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       }
       // Filter out invalid booknotes
       config.booknotes = config.booknotes?.filter((booknote) => booknote.cfi) ?? [];
-      // Load cached book navigation (TOC + section fragments) or compute and persist.
+      // A cold EPUB nav build scans every section. Restore a valid cache now,
+      // but defer cache misses until after the reader can paint the first page.
       if (book.format === 'EPUB' && bookDoc.rendition?.layout !== 'pre-paginated') {
-        const cachedNav = await appService.loadBookNav(book);
-        if (cachedNav?.version === BOOK_NAV_VERSION && process.env.NODE_ENV === 'production') {
-          hydrateBookNav(bookDoc, cachedNav);
-        } else {
-          const freshNav = await computeBookNav(bookDoc);
-          hydrateBookNav(bookDoc, freshNav);
-          try {
-            await appService.saveBookNav(book, freshNav);
-          } catch (e) {
-            console.warn('Failed to persist book nav cache:', e);
-          }
-        }
+        await prepareBookNavigation({
+          appService,
+          book,
+          bookDoc,
+          sortedTOC: config.viewSettings?.sortedTOC ?? false,
+          convertChineseVariant: config.viewSettings?.convertChineseVariant ?? 'none',
+          onHydrated: () => {
+            useBookDataStore.setState((state) => {
+              const current = state.booksData[id];
+              if (current?.bookDoc !== bookDoc) return state;
+              return {
+                booksData: {
+                  ...state.booksData,
+                  [id]: { ...current, bookDoc },
+                },
+              };
+            });
+          },
+        });
+      } else {
+        await updateToc(
+          bookDoc,
+          config.viewSettings?.sortedTOC ?? false,
+          config.viewSettings?.convertChineseVariant ?? 'none',
+        );
       }
-      await updateToc(
-        bookDoc,
-        config.viewSettings?.sortedTOC ?? false,
-        config.viewSettings?.convertChineseVariant ?? 'none',
-      );
       if (!bookDoc.metadata.title && file) {
         bookDoc.metadata.title = getBaseFilename(file.name);
       }

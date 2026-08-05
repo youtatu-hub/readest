@@ -5,6 +5,7 @@ import { AlertTriangle } from 'lucide-react';
 import type { AppService } from '@/types/system';
 import type { BookDoc } from '@/libs/document';
 import type { AISettings } from '@/services/ai/types';
+import { useAutoBookIndex } from '@/hooks/useAutoBookIndex';
 import { AgentRuntime } from '../runtime/AgentRuntime';
 import { BookIndexer } from '../retrieval/BookIndexer';
 import { BookRetriever } from '../retrieval/BookRetriever';
@@ -266,6 +267,7 @@ export function ReedyAssistant({
 
   // Indexing state — tracked locally to avoid layering yet another store.
   const [indexingPhase, setIndexingPhase] = useState<IndexingPhase>('idle');
+  const [isCheckingIndex, setIsCheckingIndex] = useState(true);
   const [indexProgress, setIndexProgress] = useState<{
     pct: number;
     current: number;
@@ -273,8 +275,12 @@ export function ReedyAssistant({
   } | null>(null);
 
   useEffect(() => {
-    if (!reedy || !bookHash) return;
+    if (!reedy || !bookHash) {
+      setIsCheckingIndex(true);
+      return;
+    }
     let alive = true;
+    setIsCheckingIndex(true);
     void reedy.db
       .getBookMeta(bookHash)
       .then((meta) => {
@@ -291,6 +297,9 @@ export function ReedyAssistant({
         const message = err instanceof Error ? err.message : String(err);
         setIndexError(message);
         setIndexingPhase('failed');
+      })
+      .finally(() => {
+        if (alive) setIsCheckingIndex(false);
       });
     return () => {
       alive = false;
@@ -337,6 +346,16 @@ export function ReedyAssistant({
     }
   }, [reedy, bookDoc, bookHash, models.embedding]);
 
+  useAutoBookIndex({
+    bookHash,
+    ready:
+      !isCheckingIndex &&
+      indexingPhase === 'idle' &&
+      Boolean(reedy) &&
+      aiSettings.enabled,
+    startIndexing: handleIndex,
+  });
+
   const handleSend = useCallback(
     (text: string, imageAttachments: ReedyImageAttachment[]) => {
       if (!runtime) return;
@@ -377,6 +396,8 @@ export function ReedyAssistant({
       </div>
     );
   }
+
+  if (isCheckingIndex) return null;
 
   if (indexingPhase !== 'indexed') {
     return (

@@ -117,7 +117,10 @@ export interface AIMessage {
 
 export interface AIMessageAttachment {
   type: 'image';
-  data: string;
+  /** Local display data. It is never serialized into Replica metadata. */
+  data?: string;
   mimeType: string;
   filename?: string;
+  /** Stable binary Replica id once the image is queued for sync. */
+  syncId?: string;
 }

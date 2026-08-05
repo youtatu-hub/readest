@@ -333,13 +333,16 @@ describe('AgentRuntime — streamText arg wiring', () => {
       system: string;
       tools?: Record<string, unknown>;
       stopWhen: unknown;
-      messages: Array<{ role: string; content: string }>;
+      messages: Array<{ role: string; content: unknown }>;
     };
     expect(call.system).toContain('POL.');
     expect(call.tools).toBeDefined();
     expect(call.tools!['a']).toBeDefined();
     expect(call.stopWhen).toEqual({ __stepCountIs: 4 });
-    expect(call.messages.at(-1)).toEqual({ role: 'user', content: 'q' });
+    expect(call.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'q' }],
+    });
   });
 
   it('does not pass tools when the registry is empty', async () => {

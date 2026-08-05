@@ -68,6 +68,10 @@ const useCategoryCopy = (): Record<SyncCategory, CategoryCopy> => {
       title: _('Reading statistics'),
       description: _('Reading time and pages read, synced across your devices and KOReader.'),
     },
+    ai_chat: {
+      title: _('AI chats'),
+      description: _('AI conversation history for your books'),
+    },
   };
 };
 

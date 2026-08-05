@@ -28,11 +28,14 @@ const baseRow = (overrides: Partial<ReplicaRow> = {}): ReplicaRow => ({
 });
 
 describe('isAllowedKind', () => {
-  test('current allowlist contains dictionary + font + texture + opds_catalog', () => {
+  test('current allowlist contains replica-backed user data kinds', () => {
     expect(isAllowedKind('dictionary')).toBe(true);
     expect(isAllowedKind('font')).toBe(true);
     expect(isAllowedKind('texture')).toBe(true);
     expect(isAllowedKind('opds_catalog')).toBe(true);
+    expect(isAllowedKind('ai_chat')).toBe(true);
+    expect(isAllowedKind('ai_chat_message')).toBe(true);
+    expect(isAllowedKind('ai_chat_attachment')).toBe(true);
   });
 
   test('rejects arbitrary strings', () => {

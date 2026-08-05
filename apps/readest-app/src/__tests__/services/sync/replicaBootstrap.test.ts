@@ -46,12 +46,12 @@ describe('bootstrapReplicaAdapters', () => {
   test('is idempotent: calling twice is a no-op (does not throw)', () => {
     bootstrapReplicaAdapters();
     bootstrapReplicaAdapters();
-    expect(listReplicaAdapters()).toHaveLength(5);
+    expect(listReplicaAdapters()).toHaveLength(8);
   });
 
-  test('registers the current allowlist (dictionary, font, texture, opds_catalog, settings)', () => {
+  test('registers the current allowlist', () => {
     bootstrapReplicaAdapters();
     const kinds = listReplicaAdapters().map((a) => a.kind);
-    expect(kinds).toEqual(['dictionary', 'font', 'texture', 'opds_catalog', 'settings']);
+    expect(kinds).toEqual(['dictionary', 'font', 'texture', 'opds_catalog', 'settings', 'ai_chat', 'ai_chat_message', 'ai_chat_attachment']);
   });
 });

@@ -136,10 +136,12 @@ export class AgentRuntime {
 
     const userContent = [
       ...(input.userMessage ? [{ type: 'text' as const, text: input.userMessage }] : []),
-      ...(input.imageAttachments ?? []).map((attachment) => ({
-        type: 'image' as const,
-        image: attachment.data,
-      })),
+      ...(input.imageAttachments ?? [])
+        .filter((attachment): attachment is typeof attachment & { data: string } => Boolean(attachment.data))
+        .map((attachment) => ({
+          type: 'image' as const,
+          image: attachment.data,
+        })),
     ];
     const messages: ModelMessage[] = [
       ...(input.history ?? []),

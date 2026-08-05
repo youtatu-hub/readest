@@ -38,10 +38,23 @@ const resolvePath = (path: string, base: BaseDir): ResolvedPath => {
 
 const dbName = 'AppFileSystem';
 const dbVersion = 1;
+let dbConnection: IDBDatabase | null = null;
+let dbConnectionPromise: Promise<IDBDatabase> | null = null;
 
 async function openIndexedDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbConnection) return dbConnection;
+  if (dbConnectionPromise) return dbConnectionPromise;
+
+  dbConnectionPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(dbName, dbVersion);
+    let settled = false;
+
+    const rejectOpen = (error: DOMException | Error | null) => {
+      if (settled) return;
+      settled = true;
+      dbConnectionPromise = null;
+      reject(error ?? new Error('Failed to open IndexedDB filesystem'));
+    };
 
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -50,10 +63,56 @@ async function openIndexedDB(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      if (settled) {
+        db.close();
+        return;
+      }
+      settled = true;
+      db.onversionchange = () => {
+        db.close();
+        if (dbConnection === db) {
+          dbConnection = null;
+          dbConnectionPromise = null;
+        }
+      };
+      db.addEventListener('close', () => {
+        if (dbConnection === db) {
+          dbConnection = null;
+          dbConnectionPromise = null;
+        }
+      });
+      dbConnection = db;
+      resolve(db);
+    };
+    request.onerror = () => rejectOpen(request.error);
+    request.onblocked = () =>
+      rejectOpen(new Error('IndexedDB filesystem open was blocked by another window'));
   });
+  return dbConnectionPromise;
 }
+
+export const waitForIDBTransaction = (transaction: IDBTransaction): Promise<void> =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const rejectOnce = () => {
+      if (settled) return;
+      settled = true;
+      reject(
+        transaction.error ?? new DOMException('IndexedDB transaction was aborted', 'AbortError'),
+      );
+    };
+
+    transaction.oncomplete = resolveOnce;
+    transaction.onerror = rejectOnce;
+    transaction.onabort = rejectOnce;
+  });
 
 const indexedDBFileSystem: FileSystem = {
   resolvePath,
@@ -152,29 +211,17 @@ const indexedDBFileSystem: FileSystem = {
     if (content instanceof File) {
       content = await content.arrayBuffer();
     }
-    return new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('files', 'readwrite');
-      const store = transaction.objectStore('files');
-
-      store.put({ path: fp, content });
-
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
+    const transaction = db.transaction('files', 'readwrite');
+    transaction.objectStore('files').put({ path: fp, content });
+    await waitForIDBTransaction(transaction);
   },
   async removeFile(path: string, base: BaseDir) {
     const { fp } = this.resolvePath(path, base);
     const db = await openIndexedDB();
 
-    return new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('files', 'readwrite');
-      const store = transaction.objectStore('files');
-
-      store.delete(fp);
-
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
+    const transaction = db.transaction('files', 'readwrite');
+    transaction.objectStore('files').delete(fp);
+    await waitForIDBTransaction(transaction);
   },
   async createDir(path: string, base: BaseDir) {
     return await this.writeFile(path, base, '');
@@ -183,23 +230,19 @@ const indexedDBFileSystem: FileSystem = {
     const { fp } = this.resolvePath(path, base);
     const db = await openIndexedDB();
 
-    return new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction('files', 'readwrite');
-      const store = transaction.objectStore('files');
-      const request = store.getAll();
+    const transaction = db.transaction('files', 'readwrite');
+    const store = transaction.objectStore('files');
+    const request = store.getAll();
 
-      request.onsuccess = () => {
-        const files = request.result as { path: string }[];
-        files.forEach((file) => {
-          if (file.path.startsWith(fp)) {
-            store.delete(file.path);
-          }
-        });
-      };
-
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-    });
+    request.onsuccess = () => {
+      const files = request.result as { path: string }[];
+      files.forEach((file) => {
+        if (file.path.startsWith(fp)) {
+          store.delete(file.path);
+        }
+      });
+    };
+    await waitForIDBTransaction(transaction);
   },
   async readDir(path: string, base: BaseDir) {
     const { fp } = this.resolvePath(path, base);
