@@ -9,9 +9,11 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const S3_ENDPOINT = process.env['S3_ENDPOINT'] || '';
-// S3_PUBLIC_ENDPOINT is the MinIO URL reachable by browsers (e.g. http://<host-ip>:9000).
-// When unset it falls back to S3_ENDPOINT so single-endpoint setups are unaffected.
+// S3_PUBLIC_ENDPOINT is the MinIO URL used for browser uploads. Downloads can
+// use a separately accelerated endpoint while large uploads bypass proxy limits.
 const S3_PUBLIC_ENDPOINT = process.env['S3_PUBLIC_ENDPOINT'] || S3_ENDPOINT;
+const S3_PUBLIC_DOWNLOAD_ENDPOINT =
+  process.env['S3_PUBLIC_DOWNLOAD_ENDPOINT'] || S3_PUBLIC_ENDPOINT;
 const S3_REGION = process.env['S3_REGION'] || 'auto';
 const S3_ACCESS_KEY_ID = process.env['S3_ACCESS_KEY_ID'] || '';
 const S3_SECRET_ACCESS_KEY = process.env['S3_SECRET_ACCESS_KEY'] || '';
@@ -29,15 +31,18 @@ export const s3Client = new S3Client({
   credentials: s3ClientCredentials,
 });
 
-// Signing client uses S3_PUBLIC_ENDPOINT so presigned URLs contain a hostname
-// that browsers can reach (S3_ENDPOINT may be an internal docker hostname like
-// "minio:9000" which is not resolvable outside the docker network).
-const s3SigningClient = new S3Client({
-  forcePathStyle: true,
-  region: S3_REGION,
-  endpoint: S3_PUBLIC_ENDPOINT,
-  credentials: s3ClientCredentials,
-});
+const createSigningClient = (endpoint: string) =>
+  new S3Client({
+    forcePathStyle: true,
+    region: S3_REGION,
+    endpoint,
+    credentials: s3ClientCredentials,
+  });
+
+// Uploads may need a DNS-only endpoint to avoid reverse-proxy request-size
+// limits. Downloads can still use a CDN-backed endpoint for a stable route.
+const s3UploadSigningClient = createSigningClient(S3_PUBLIC_ENDPOINT);
+const s3DownloadSigningClient = createSigningClient(S3_PUBLIC_DOWNLOAD_ENDPOINT);
 
 export const s3Storage = {
   getClient: () => {
@@ -54,7 +59,7 @@ export const s3Storage = {
       Bucket: bucketName,
       Key: fileKey,
     });
-    const downloadUrl = await getSignedUrl(s3SigningClient, getCommand, {
+    const downloadUrl = await getSignedUrl(s3DownloadSigningClient, getCommand, {
       expiresIn: expiresIn,
     });
     return downloadUrl;
@@ -74,7 +79,7 @@ export const s3Storage = {
       ContentLength: contentLength,
     });
 
-    const uploadUrl = await getSignedUrl(s3SigningClient, putCommand, {
+    const uploadUrl = await getSignedUrl(s3UploadSigningClient, putCommand, {
       expiresIn: expiresIn,
       signableHeaders,
     });
